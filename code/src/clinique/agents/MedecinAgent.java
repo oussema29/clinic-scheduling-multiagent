@@ -28,7 +28,8 @@ import java.util.TreeMap;
  * - Contract-Net (M4) : propose son plus proche creneau libre et le met en HOLD ;
  *   V1 : pour une urgence haute sans creneau libre assez proche, propose de PREEMPTER un patient normal.
  *   ACCEPT -> confirme, REJECT ou expiration -> libere.
- * - Request (M6) : annuler, restaurer (retour arriere V1), agenda (diagnostic) ; commande devenir_absent (M7).
+ * - Request (M6) : annuler, restaurer (retour arriere V1), agenda (diagnostic) ; commandes devenir_absent (M7)
+ *   et revenir (V2, M7 statut=disponible).
  */
 public class MedecinAgent extends Agent {
     private static final long HOLD_MS = 5000;
@@ -186,6 +187,9 @@ public class MedecinAgent extends Agent {
                 } else if ("devenir_absent".equals(action)) {
                     devenirAbsent();
                     rep.setContent(Msg.build("statut", "absent"));
+                } else if ("revenir".equals(action)) {
+                    revenir();
+                    rep.setContent(Msg.build("statut", "disponible"));
                 } else {
                     throw new NotUnderstoodException("action inconnue : " + action);
                 }
@@ -242,6 +246,25 @@ public class MedecinAgent extends Agent {
             sb.append(e.getKey()).append('=').append(e.getValue().patient);
         }
         Log.log(getLocalName(), "AGENDA " + getLocalName() + " : " + sb);
+    }
+
+    /**
+     * V2 : retour du medecin. Il se reinscrit au DF (donc redevient candidat pour les NOUVELLES demandes) et previent
+     * le coordinateur (M7, statut=disponible). Il ne reprend pas ses anciens patients : ils ont ete replanifies.
+     */
+    private void revenir() {
+        if (!absent) return;
+        absent = false;
+        Df.inscrire(this, Msg.SVC_MEDECIN, specialite);
+        Log.log(getLocalName(), "REVIENT : de nouveau disponible (agenda vide)");
+        AID coord = Df.un(this, Msg.SVC_COORD);
+        if (coord != null) {
+            ACLMessage m = new ACLMessage(ACLMessage.INFORM);
+            m.addReceiver(coord);
+            m.setOntology(Msg.ONTO_ABSENCE);
+            m.setContent(Msg.build("medecin", getLocalName(), "statut", "disponible", "patients", ""));
+            send(m);
+        }
     }
 
     /** M7 : se retire du DF, refuse tout CFP et previent directement le coordinateur. */

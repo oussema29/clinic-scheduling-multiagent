@@ -40,6 +40,9 @@ public class SalleAgent extends Agent {
                 ACLMessage rep = req.createReply();
                 rep.setPerformative(ACLMessage.INFORM);
                 if ("reserver".equals(action)) {
+                    // crochet de test : une salle "lente" met 1,5 s a repondre (-Dclinique.test.salleLente=salle1)
+                    if (getLocalName().equals(System.getProperty("clinique.test.salleLente")))
+                        try { Thread.sleep(1500); } catch (InterruptedException e) { /* ignore */ }
                     if (agenda.containsKey(creneau)) {
                         Log.log(getLocalName(), "refuse " + patient + " au creneau " + creneau + " (occupee)");
                         throw new RefuseException("raison=occupee");

@@ -23,6 +23,8 @@ import java.util.logging.Logger;
  *   java -cp "lib/jade.jar;out" clinique.Main urgence refus        V1 : variante, le patient deplace refuse la compensation
  *   java -cp "lib/jade.jar;out" clinique.Main sature               V1 : urgence sans victime possible (planning sature)
  *   java -cp "lib/jade.jar;out" clinique.Main absence-comp       V1 (test) : un medecin s'absente pendant une compensation
+ *   java -cp "lib/jade.jar;out" clinique.Main absence            V2 : un medecin s'absente (urgent replanifie d'abord, capacite insuffisante), puis revient
+ *   java -cp "lib/jade.jar;out" clinique.Main absence-negociation  V2 (test) : absence en pleine negociation ; utiliser -Dclinique.test.salleLente=salle1
  *   java -cp "lib/jade.jar;out" clinique.Main double              V1 : une 2e urgence ne peut pas deplacer un patient deja deplace
  *   option --gui : ouvre l'interface RMA de JADE ; option --sniffer : ouvre aussi le Sniffer sur les agents principaux
  */
@@ -54,6 +56,10 @@ public class Main {
             duree = urgence(a.size() > 1 && a.get(1).equals("refus"), false);
         } else if (mode.equals("absence-comp")) {
             duree = urgence(false, true);
+        } else if (mode.equals("absence-negociation")) {
+            duree = journeeType("dr_leroy", 1300);   // test : dr_leroy s'absente pendant la reservation de la salle (salle ralentie)
+        } else if (mode.equals("absence")) {
+            duree = absenceEtRetour();
         } else if (mode.equals("double")) {
             duree = doubleUrgence();
         } else if (mode.equals("sature")) {
@@ -140,6 +146,33 @@ public class Main {
     }
 
     /**
+     * V2 : absence d'un medecin puis retour.
+     * dr_leroy porte P1, P3 (normaux) et P5 (urgent, arrive au creneau 2) ; dr_martin a un seul creneau libre (le 2).
+     * dr_leroy s'absente : P5 (urgent) est replanifie en premier et prend le dernier creneau de dr_martin ;
+     * P1 et P3 n'ont plus de place : echec "capacite". Plus tard dr_leroy revient et P6, nouvelle demande, passe chez lui.
+     */
+    static long absenceEtRetour() throws Exception {
+        Log.log("main", "=== Absence d'un medecin, replanification, retour (V2) ===");
+        infrastructure();
+        agent("dr_martin", clinique.agents.MedecinAgent.class, "cardiologie", 3);
+        agent("dr_leroy", clinique.agents.MedecinAgent.class, "cardiologie", 3);
+        agent("dr_dupont", clinique.agents.MedecinAgent.class, "generaliste", 6);
+        attendreDF();
+        patient("P1", "J'ai des palpitations depuis hier", 0, 0);
+        patient("P2", "Ma tension est trop elevee", 0, 100);
+        patient("P3", "Mal au coeur depuis ce matin", 0, 200);
+        patient("P4", "Essoufflement a l'effort", 0, 300);
+        patient("P5", "Douleur dans la poitrine et difficulte a respirer", 2, 400);
+        patient("P6", "Palpitations et tension elevee", 0, 9000);   // arrive apres le retour de dr_leroy
+        List<ScenarioAgent.Etape> etapes = new ArrayList<>();
+        etapes.add(new ScenarioAgent.Etape(5000, "dr_leroy", null, Msg.build("action", "devenir_absent")));
+        etapes.add(new ScenarioAgent.Etape(8000, "dr_leroy", null, Msg.build("action", "revenir")));
+        bilanEtAgendas(etapes, 12500);
+        agent("scenario", ScenarioAgent.class, etapes);
+        return 15000;
+    }
+
+    /**
      * V1 : regle d'equite. Une 1re urgence (P5) deplace P3, qui est recase au creneau 2 chez dr_leroy.
      * Une 2e urgence (P6, arrivee au creneau 2) ne trouve alors comme seule victime possible que P3 : deja deplace,
      * donc protege. Resultat attendu : echec planning_sature, et P3 garde son creneau.
@@ -181,7 +214,10 @@ public class Main {
     }
 
     /** La journee type du rapport : 5 patients, une urgence, un medecin qui s'absente, un bilan. */
-    static long journeeType() throws Exception {
+    static long journeeType() throws Exception { return journeeType("dr_martin", 5000); }
+
+    /** Journee type ; "medecinAbsent" s'absente apres "quand" ms (un delai tres court provoque l'absence en pleine negociation). */
+    static long journeeType(String medecinAbsent, long quand) throws Exception {
         Log.log("main", "=== Journee type ===");
         infrastructure();
         // Planning des cardiologues volontairement petit : 3 creneaux chacun.
@@ -197,7 +233,7 @@ public class Main {
         patient("P5", "Fatigue et mal de gorge", 1, 0);
 
         List<ScenarioAgent.Etape> etapes = new ArrayList<>();
-        etapes.add(new ScenarioAgent.Etape(5000, "dr_martin", null, Msg.build("action", "devenir_absent")));
+        etapes.add(new ScenarioAgent.Etape(quand, medecinAbsent, null, Msg.build("action", "devenir_absent")));
         bilanEtAgendas(etapes, 9000);
         agent("scenario", ScenarioAgent.class, etapes);
         return 11000;
@@ -230,6 +266,7 @@ public class Main {
         }
         List<ScenarioAgent.Etape> etapes = new ArrayList<>();
         etapes.add(new ScenarioAgent.Etape(4000 + 100L * n, "dr_martin", null, Msg.build("action", "devenir_absent")));
+        etapes.add(new ScenarioAgent.Etape(6500 + 100L * n, "dr_martin", null, Msg.build("action", "revenir")));   // V2 : il revient
         bilanEtAgendas(etapes, 8000 + 200L * n);
         agent("scenario", ScenarioAgent.class, etapes);
         return 10000 + 200L * n;

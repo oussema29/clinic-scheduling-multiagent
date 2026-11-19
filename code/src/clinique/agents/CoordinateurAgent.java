@@ -52,6 +52,8 @@ public class CoordinateurAgent extends Agent {
         int tentative = 0;
         final java.util.TreeSet<Integer> exclus = new java.util.TreeSet<>();   // creneaux sans salle deja essayes
         boolean termine = false;
+        boolean replanification = false;      // V2 : demande issue de l'absence d'un medecin
+        int creneauOrigine = Integer.MAX_VALUE;   // V2 : creneau perdu (sert a trier la replanification)
         boolean deplace = false;        // V1 : deja deplace une fois (ne peut plus etre une victime)
         boolean compensation = false;   // V1 : demande de compensation d'un patient deplace
         int ancien = -1;                // V1 : creneau perdu par le patient deplace
@@ -71,6 +73,7 @@ public class CoordinateurAgent extends Agent {
     private final PriorityQueue<Demande> file = new PriorityQueue<>(
             Comparator.<Demande>comparingInt(d -> -d.urgence.poids)
                     .thenComparingInt(d -> d.compensation ? 0 : 1)   // V1 : a urgence egale, les compensations d'abord
+                    .thenComparingInt(d -> d.creneauOrigine)         // V2 : puis les patients qui avaient un creneau, du plus ancien au plus recent
                     .thenComparingLong(d -> d.seq));
     private final Map<String, Rdv> registre = new TreeMap<>();     // patient -> rdv
     private final Map<String, Integer> echecs = new TreeMap<>();   // raison -> nombre
@@ -129,6 +132,11 @@ public class CoordinateurAgent extends Agent {
     private void recevoirAbsence(ACLMessage m) {
         Map<String, String> c = Msg.parse(m);
         String medecin = c.get("medecin");
+        if ("disponible".equals(c.get("statut"))) {     // V2 : retour du medecin
+            absents.remove(medecin);
+            Log.log(getLocalName(), "RETOUR de " + medecin + " : de nouveau consulte pour les nouvelles demandes");
+            return;
+        }
         absents.add(medecin);
         String liste = c.get("patients");
         Log.log(getLocalName(), "ABSENCE de " + medecin + " (patients : " + (liste == null || liste.isEmpty() ? "aucun" : liste) + ")");
@@ -141,6 +149,8 @@ public class CoordinateurAgent extends Agent {
                 Demande d = new Demande(p, r.demande.conv, r.demande.specialite, r.demande.urgence,
                         r.demande.arrivee, compteur++);
                 d.deplace = r.demande.deplace;
+                d.replanification = true;
+                d.creneauOrigine = r.creneau;
                 file.add(d);
                 ACLMessage inf = new ACLMessage(ACLMessage.INFORM);
                 inf.addReceiver(d.aid());
@@ -496,6 +506,8 @@ public class CoordinateurAgent extends Agent {
         n.deplace = d.deplace;
         n.compensation = d.compensation;
         n.ancien = d.ancien;
+        n.replanification = true;
+        n.creneauOrigine = creneau;
         file.add(n);
         if (!d.compensation) {
             ACLMessage inf = new ACLMessage(ACLMessage.INFORM);
@@ -531,6 +543,9 @@ public class CoordinateurAgent extends Agent {
     private void echec(Demande d, String raison) {
         if (d.termine) return;
         d.termine = true;
+        // V2 : un patient replanifie a cause d'une absence qui ne trouve plus de place recoit une raison dediee
+        if (d.replanification && (raison.equals("planning_plein") || raison.equals("planning_sature")
+                || raison.equals("aucun_medecin") || raison.equals("aucun_medecin_disponible"))) raison = "capacite";
         echecs.merge(raison, 1, Integer::sum);
         Log.log(getLocalName(), "ECHEC " + d.patient + " : " + raison);
         ACLMessage f = new ACLMessage(ACLMessage.FAILURE);
