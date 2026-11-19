@@ -30,6 +30,7 @@ public class SalleAgent extends Agent {
         addBehaviour(new AchieveREResponder(this, tpl) {
             @Override
             // reserver : refuse si le creneau est pris, sinon le reserve. annuler : libere le creneau.
+            // transferer (V1) : donne le creneau d'un patient a un autre. agenda : ligne de diagnostic.
             protected ACLMessage handleRequest(ACLMessage req) throws NotUnderstoodException, RefuseException {
                 Map<String, String> c = Msg.parse(req);
                 String action = c.get("action");
@@ -52,6 +53,29 @@ public class SalleAgent extends Agent {
                         Log.log(getLocalName(), "creneau " + creneau + " libere (annulation " + patient + ")");
                     }
                     rep.setContent(Msg.build("statut", "annulee"));
+                } else if ("transferer".equals(action)) {
+                    // V1 (preemption) : le creneau passe du patient deplace (de) au patient urgent (vers).
+                    // Atomique : on verifie que le creneau appartient bien a "de" avant de le donner.
+                    String de = c.get("de"), vers = c.get("vers");
+                    if (Boolean.getBoolean("clinique.test.refuseTransfert")) {   // crochet de test : simule une panne de transfert
+                        Log.log(getLocalName(), "(test) transfert refuse volontairement");
+                        throw new RefuseException("raison=panne_simulee");
+                    }
+                    if (de == null || vers == null || !de.equals(agenda.get(creneau))) {
+                        Log.log(getLocalName(), "refuse le transfert du creneau " + creneau + " (" + de + " -> " + vers + ")");
+                        throw new RefuseException("raison=pas_au_bon_patient");
+                    }
+                    agenda.put(creneau, vers);
+                    Log.log(getLocalName(), "creneau " + creneau + " transfere de " + de + " a " + vers);
+                    rep.setContent(Msg.build("statut", "transferee", "salle", getLocalName(), "creneau", "" + creneau));
+                } else if ("agenda".equals(action)) {
+                    StringBuilder sb = new StringBuilder();
+                    for (Map.Entry<Integer, String> e : new java.util.TreeMap<>(agenda).entrySet()) {
+                        if (sb.length() > 0) sb.append(", ");
+                        sb.append(e.getKey()).append('=').append(e.getValue());
+                    }
+                    Log.log(getLocalName(), "AGENDA " + getLocalName() + " : " + sb);
+                    rep.setContent(Msg.build("statut", "ok"));
                 } else {
                     throw new NotUnderstoodException("action inconnue : " + action);
                 }
