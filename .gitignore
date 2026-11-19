@@ -1,0 +1,13 @@
+# Fichiers compiles
+out/
+*.class
+
+# Documents (restent en local)
+*.pdf
+*.md
+
+# Divers
+sources.txt
+*.log
+APDescription.txt
+MTPs-Main-Container.txt
