@@ -11,3 +11,6 @@ sources.txt
 *.log
 APDescription.txt
 MTPs-Main-Container.txt
+
+# Resultats des campagnes de mesure (fichiers generes)
+resultats/

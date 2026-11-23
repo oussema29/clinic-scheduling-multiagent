@@ -1,6 +1,9 @@
 package clinique;
 
 import clinique.agents.ScenarioAgent;
+import clinique.eval.Campagne;
+import clinique.eval.MonitorAgent;
+import clinique.eval.ScenarioRunner;
 import clinique.common.Log;
 import clinique.common.Msg;
 import jade.core.Profile;
@@ -25,6 +28,7 @@ import java.util.logging.Logger;
  *   java -cp "lib/jade.jar;out" clinique.Main absence-comp       V1 (test) : un medecin s'absente pendant une compensation
  *   java -cp "lib/jade.jar;out" clinique.Main absence            V2 : un medecin s'absente (urgent replanifie d'abord, capacite insuffisante), puis revient
  *   java -cp "lib/jade.jar;out" clinique.Main absence-negociation  V2 (test) : absence en pleine negociation ; utiliser -Dclinique.test.salleLente=salle1
+ *   java -cp "lib/jade.jar;out" clinique.Main campagne fifo|priorite|negociation 50 42   V3 : une campagne de mesure (50 patients, graine 42)
  *   java -cp "lib/jade.jar;out" clinique.Main double              V1 : une 2e urgence ne peut pas deplacer un patient deja deplace
  *   option --gui : ouvre l'interface RMA de JADE ; option --sniffer : ouvre aussi le Sniffer sur les agents principaux
  */
@@ -38,9 +42,13 @@ public class Main {
 
     public static void main(String[] args) throws Exception {
         boolean gui = false;
+        boolean verbeux = false;
         sniffer = false;
         List<String> a = new ArrayList<>();
-        for (String s : args) { if (s.equals("--gui")) gui = true; else if (s.equals("--sniffer")) sniffer = true; else a.add(s); }
+        for (String s : args) { if (s.equals("--gui")) gui = true; else if (s.equals("--sniffer")) sniffer = true; else if (s.equals("--verbeux")) verbeux = true; else a.add(s); }
+
+        // une campagne ecrit des centaines de lignes : journal detaille coupe, sauf avec --verbeux
+        if (!a.isEmpty() && a.get(0).equals("campagne") && !verbeux) Log.actif = false;
 
         // JADE est bavard en INFO : on ne garde que les avertissements.
         Logger.getLogger("").setLevel(Level.WARNING);
@@ -56,6 +64,12 @@ public class Main {
             duree = urgence(a.size() > 1 && a.get(1).equals("refus"), false);
         } else if (mode.equals("absence-comp")) {
             duree = urgence(false, true);
+        } else if (mode.equals("campagne")) {
+            String strategie = a.size() > 1 ? a.get(1) : "negociation";
+            int n = a.size() > 2 ? Integer.parseInt(a.get(2)) : 50;
+            long graine = a.size() > 3 ? Long.parseLong(a.get(3)) : 42;
+            int lots = a.size() > 4 ? Integer.parseInt(a.get(4)) : 10;
+            duree = campagne(strategie, n, graine, lots);
         } else if (mode.equals("absence-negociation")) {
             duree = journeeType("dr_leroy", 1300);   // test : dr_leroy s'absente pendant la reservation de la salle (salle ralentie)
         } else if (mode.equals("absence")) {
@@ -80,6 +94,42 @@ public class Main {
         }
         c.kill();
         System.exit(0);
+    }
+
+    /**
+     * V3 : une campagne de mesure. 3 medecins (2 cardiologues, 1 generaliste) et 3 salles de 20 creneaux, un Monitor,
+     * un ScenarioRunner qui joue la journee. Une strategie par lancement : fifo, priorite ou negociation.
+     * Le programme s'arrete quand le Monitor a ecrit ses resultats (pas de delai fixe).
+     */
+    static long campagne(String strategie, int n, long graine, int lots) throws Exception {
+        if (!strategie.equals("fifo") && !strategie.equals("priorite") && !strategie.equals("negociation"))
+            throw new IllegalArgumentException("strategie inconnue : " + strategie + " (fifo, priorite ou negociation)");
+        Log.toujours("main", "=== Campagne : strategie " + strategie + ", " + n + " patients, graine " + graine + " ===");
+        Campagne.termine = false;
+        agent("monitor", MonitorAgent.class, strategie, n, graine, "resultats",
+                "dr_martin;dr_leroy;dr_dupont;salle1;salle2;salle3", 60, 60);
+        agent("coordinateur", clinique.agents.CoordinateurAgent.class, strategie, 30L, "monitor");   // guichet court : 30 ms
+        agent("salle1", clinique.agents.SalleAgent.class);
+        agent("salle2", clinique.agents.SalleAgent.class);
+        agent("salle3", clinique.agents.SalleAgent.class);
+        agent("dr_martin", clinique.agents.MedecinAgent.class, "cardiologie", 20);
+        agent("dr_leroy", clinique.agents.MedecinAgent.class, "cardiologie", 20);
+        agent("dr_dupont", clinique.agents.MedecinAgent.class, "generaliste", 20);
+        Thread.sleep(1000);   // le temps de s'inscrire au DF
+        // dr_martin s'absente apres le lot (lots/2 - 1) et revient apres le lot (3*lots/4)
+        agent("runner", ScenarioRunner.class, n, graine, lots, "dr_martin", lots / 2 - 1, (3 * lots) / 4);
+
+        long debut = System.currentTimeMillis();
+        while (!Campagne.termine) {
+            if (System.currentTimeMillis() - debut > 180000) {
+                System.out.println("ERREUR : la campagne n'a pas termine apres 3 minutes");
+                c.kill();
+                System.exit(1);
+            }
+            Thread.sleep(50);
+        }
+        Thread.sleep(200);
+        return 0;
     }
 
     /** Laisse les agents s'inscrire au DF ; avec --sniffer, ouvre le Sniffer JADE sur les agents principaux. */

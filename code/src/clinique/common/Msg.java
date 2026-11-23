@@ -17,12 +17,16 @@ public final class Msg {
     public static final String ONTO_DEMANDE = "clinique-demande";  // M3
     public static final String ONTO_ABSENCE = "clinique-absence";  // M7
     public static final String ONTO_BILAN   = "clinique-bilan";    // commande du scenario
+    public static final String ONTO_EVENT   = "clinique-evenement"; // M9 : coordinateur -> Monitor (V3)
+    public static final String ONTO_ETAT    = "clinique-etat";     // V3 : "le coordinateur est-il au repos ?"
+    public static final String ONTO_FIN     = "clinique-fin";      // V3 : le ScenarioRunner demande au Monitor de conclure
 
     // Types de service enregistres au DF
     public static final String SVC_MEDECIN = "medecin";
     public static final String SVC_SALLE   = "salle";
     public static final String SVC_TRIAGE  = "triage";
     public static final String SVC_COORD   = "coordination";
+    public static final String SVC_MONITOR = "monitor";
 
     /** build("a","1","b","2") donne "a=1;b=2". */
     public static String build(String... kv) {

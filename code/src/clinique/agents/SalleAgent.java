@@ -78,7 +78,7 @@ public class SalleAgent extends Agent {
                         sb.append(e.getKey()).append('=').append(e.getValue());
                     }
                     Log.log(getLocalName(), "AGENDA " + getLocalName() + " : " + sb);
-                    rep.setContent(Msg.build("statut", "ok"));
+                    rep.setContent(Msg.build("statut", "ok", "agenda", sb.toString().replace(" ", "").replace('=', ':')));
                 } else {
                     throw new NotUnderstoodException("action inconnue : " + action);
                 }

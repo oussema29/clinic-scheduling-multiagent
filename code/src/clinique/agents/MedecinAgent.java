@@ -81,7 +81,10 @@ public class MedecinAgent extends Agent {
                 }
 
                 // V1 : une urgence haute doit etre vue vite. Pas de creneau libre assez proche -> preemption.
-                boolean tropTard = urgence == Urgence.HAUTE && (libre < 0 || libre > arrivee + Slots.DELAI_URGENCE);
+                // V3 : la preemption n'existe que dans la strategie "negociation" (le CFP porte preemption=oui|non)
+                boolean preemptionPermise = !"non".equals(c.get("preemption"));
+                boolean tropTard = urgence == Urgence.HAUTE && preemptionPermise
+                        && (libre < 0 || libre > arrivee + Slots.DELAI_URGENCE);
                 if (tropTard) {
                     int victime = choisirVictime(arrivee, libre, exclus);
                     if (victime >= 0) {
@@ -99,7 +102,7 @@ public class MedecinAgent extends Agent {
                 }
 
                 if (libre < 0) {
-                    String raison = urgence == Urgence.HAUTE ? "planning_sature" : "planning_plein";
+                    String raison = urgence == Urgence.HAUTE && preemptionPermise ? "planning_sature" : "planning_plein";
                     Log.log(getLocalName(), "refuse " + c.get("patient") + " : " + raison.replace('_', ' '));
                     throw new RefuseException("raison=" + raison);
                 }
@@ -182,8 +185,8 @@ public class MedecinAgent extends Agent {
                     Log.log(getLocalName(), "creneau " + creneau + " restaure pour " + c.get("patient"));
                     rep.setContent(Msg.build("statut", "restaure"));
                 } else if ("agenda".equals(action)) {
-                    afficherAgenda();
-                    rep.setContent(Msg.build("statut", "ok"));
+                    String agenda = afficherAgenda();
+                    rep.setContent(Msg.build("statut", "ok", "agenda", agenda));
                 } else if ("devenir_absent".equals(action)) {
                     devenirAbsent();
                     rep.setContent(Msg.build("statut", "absent"));
@@ -239,13 +242,14 @@ public class MedecinAgent extends Agent {
     }
 
     /** Ligne de diagnostic lue par les tests : AGENDA nom : creneau=patient, ... */
-    private void afficherAgenda() {
+    private String afficherAgenda() {
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<Integer, Rdv> e : new TreeMap<>(confirme).entrySet()) {
             if (sb.length() > 0) sb.append(", ");
             sb.append(e.getKey()).append('=').append(e.getValue().patient);
         }
         Log.log(getLocalName(), "AGENDA " + getLocalName() + " : " + sb);
+        return sb.toString().replace(" ", "").replace('=', ':');   // "0:P1,1:P3" : lu par le Monitor
     }
 
     /**

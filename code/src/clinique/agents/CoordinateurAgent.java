@@ -27,7 +27,14 @@ import java.util.TreeMap;
 import java.util.Vector;
 
 /**
- * Le coordinateur (V0 + V1).
+ * Le coordinateur (V0 a V3). Arguments (tous optionnels) : strategie (negociation | priorite | fifo),
+ * fenetre du guichet en ms, nom du Monitor (V3). Il ne dit plus "bonjour" a un patient par son nom : il repond
+ * a l'EXPEDITEUR de la demande (un patient, ou le ScenarioRunner qui simule les patients d'une campagne).
+ *
+ * Strategies (V3) :
+ *   fifo        : ordre d'arrivee, l'urgence est ignoree, pas de preemption
+ *   priorite    : urgence d'abord, pas de preemption (comportement de V0)
+ *   negociation : urgence d'abord + preemption + compensation (V1) + replanification (V2)
  *  - Un CyclicBehaviour recoit les demandes (M3), les absences (M7) et la commande de bilan.
  *  - Les demandes vont dans une file prioritaire : urgence haute d'abord, puis ordre d'arrivee (D6).
  *  - Une seule negociation a la fois : ContractNetInitiator vers les medecins (M4),
@@ -39,7 +46,10 @@ import java.util.Vector;
  *       on le reserve, puis on le lui propose (Propose). S'il refuse, le creneau est rendu.
  */
 public class CoordinateurAgent extends Agent {
-    private static final long GUICHET_MS = 1000;   // fenetre de regroupement avant de traiter la file
+    private static final long GUICHET_DEFAUT_MS = 1000;   // fenetre de regroupement avant de traiter la file
+    private String strategie = "negociation";
+    private long guichetMs = GUICHET_DEFAUT_MS;
+    private String monitor = null;                 // V3 : nom du Monitor (null = pas de mesures)
     private static final long REPONSE_CFP_MS = 2000;
     private static final int  TENTATIVES_MAX = 5;
 
@@ -61,7 +71,8 @@ public class CoordinateurAgent extends Agent {
             this.patient = patient; this.conv = conv; this.specialite = specialite;
             this.urgence = urgence; this.arrivee = arrivee; this.seq = seq;
         }
-        AID aid() { return new AID(patient, AID.ISLOCALNAME); }
+        AID repondreA = null;           // V3 : expediteur de la demande (le patient, ou le ScenarioRunner)
+        AID aid() { return repondreA != null ? repondreA : new AID(patient, AID.ISLOCALNAME); }
     }
 
     /** Un rendez-vous confirme. */
@@ -70,10 +81,12 @@ public class CoordinateurAgent extends Agent {
         Rdv(Demande d, String m, String s, int c) { demande = d; medecin = m; salle = s; creneau = c; }
     }
 
+    // Ordre de traitement. En FIFO, seule compte l'arrivee ; sinon : urgence, compensation (V1),
+    // creneau d'origine (V2), puis arrivee.
     private final PriorityQueue<Demande> file = new PriorityQueue<>(
-            Comparator.<Demande>comparingInt(d -> -d.urgence.poids)
-                    .thenComparingInt(d -> d.compensation ? 0 : 1)   // V1 : a urgence egale, les compensations d'abord
-                    .thenComparingInt(d -> d.creneauOrigine)         // V2 : puis les patients qui avaient un creneau, du plus ancien au plus recent
+            Comparator.<Demande>comparingInt(d -> strategie.equals("fifo") ? 0 : -d.urgence.poids)
+                    .thenComparingInt(d -> strategie.equals("fifo") ? 0 : (d.compensation ? 0 : 1))
+                    .thenComparingInt(d -> strategie.equals("fifo") ? 0 : d.creneauOrigine)
                     .thenComparingLong(d -> d.seq));
     private final Map<String, Rdv> registre = new TreeMap<>();     // patient -> rdv
     private final Map<String, Integer> echecs = new TreeMap<>();   // raison -> nombre
@@ -86,14 +99,19 @@ public class CoordinateurAgent extends Agent {
     @Override
     protected void setup() {
         Df.inscrire(this, Msg.SVC_COORD, "coordination");
-        Log.log(getLocalName(), "pret");
+        Object[] a = getArguments();
+        if (a != null && a.length > 0) strategie = (String) a[0];
+        if (a != null && a.length > 1) guichetMs = ((Number) a[1]).longValue();
+        if (a != null && a.length > 2) monitor = (String) a[2];
+        Log.log(getLocalName(), "pret, strategie " + strategie);
 
         // Seuls les messages "de service" nous interessent : les reponses des protocoles
         // (CFP, REQUEST...) sont lues par les initiateurs, pas par ce behaviour.
         final MessageTemplate tpl = MessageTemplate.or(
                 MessageTemplate.MatchOntology(Msg.ONTO_DEMANDE),
                 MessageTemplate.or(MessageTemplate.MatchOntology(Msg.ONTO_ABSENCE),
-                                   MessageTemplate.MatchOntology(Msg.ONTO_BILAN)));
+                        MessageTemplate.or(MessageTemplate.MatchOntology(Msg.ONTO_BILAN),
+                                           MessageTemplate.MatchOntology(Msg.ONTO_ETAT))));
 
         addBehaviour(new CyclicBehaviour(this) {
             @Override
@@ -102,6 +120,7 @@ public class CoordinateurAgent extends Agent {
                 if (m == null) { block(); return; }
                 if (Msg.ONTO_DEMANDE.equals(m.getOntology())) recevoirDemande(m);
                 else if (Msg.ONTO_ABSENCE.equals(m.getOntology())) recevoirAbsence(m);
+                else if (Msg.ONTO_ETAT.equals(m.getOntology())) repondreEtat(m);
                 else bilan();
             }
         });
@@ -118,10 +137,11 @@ public class CoordinateurAgent extends Agent {
         Map<String, String> c = Msg.parse(m);
         Demande d = new Demande(c.get("patient"), m.getConversationId(), c.get("specialite"),
                 Urgence.de(c.get("urgence")), Msg.getInt(c, "arrivee", 0), compteur++);
+        d.repondreA = m.getSender();
         file.add(d);
         Log.log(getLocalName(), "demande de " + d.patient + " : " + d.specialite + ", urgence " + d.urgence.code()
                 + " (file : " + file.size() + ")");
-        planifierGuichet(GUICHET_MS);
+        planifierGuichet(guichetMs);
     }
 
     /**
@@ -134,10 +154,12 @@ public class CoordinateurAgent extends Agent {
         String medecin = c.get("medecin");
         if ("disponible".equals(c.get("statut"))) {     // V2 : retour du medecin
             absents.remove(medecin);
+            evenement("evt", "retour", "medecin", medecin);
             Log.log(getLocalName(), "RETOUR de " + medecin + " : de nouveau consulte pour les nouvelles demandes");
             return;
         }
         absents.add(medecin);
+        evenement("evt", "absence", "medecin", medecin);
         String liste = c.get("patients");
         Log.log(getLocalName(), "ABSENCE de " + medecin + " (patients : " + (liste == null || liste.isEmpty() ? "aucun" : liste) + ")");
         if (liste != null && !liste.isEmpty()) {
@@ -151,6 +173,8 @@ public class CoordinateurAgent extends Agent {
                 d.deplace = r.demande.deplace;
                 d.replanification = true;
                 d.creneauOrigine = r.creneau;
+                d.repondreA = r.demande.repondreA;
+                evenement("evt", "replanification", "patient", p, "medecin", medecin);
                 file.add(d);
                 ACLMessage inf = new ACLMessage(ACLMessage.INFORM);
                 inf.addReceiver(d.aid());
@@ -160,7 +184,7 @@ public class CoordinateurAgent extends Agent {
                 Log.log(getLocalName(), p + " remis dans la file (urgence " + d.urgence.code() + ")");
             }
         }
-        planifierGuichet(GUICHET_MS);
+        planifierGuichet(guichetMs);
     }
 
     // ------------------------------------------------------------------ file d'attente
@@ -217,7 +241,8 @@ public class CoordinateurAgent extends Agent {
         cfp.setReplyByDate(new java.util.Date(System.currentTimeMillis() + REPONSE_CFP_MS));
         cfp.setContent(Msg.build("patient", d.patient, "specialite", d.specialite, "urgence", d.urgence.code(),
                 "arrivee", "" + d.arrivee, "exclu", d.exclus.toString().replaceAll("[\\[\\] ]", ""),
-                "deplace", d.deplace ? "oui" : "non"));
+                "deplace", d.deplace ? "oui" : "non",
+                "preemption", strategie.equals("negociation") ? "oui" : "non"));
 
         addBehaviour(new ContractNetInitiator(this, cfp) {
             private AID gagnant;
@@ -393,6 +418,7 @@ public class CoordinateurAgent extends Agent {
                 if (fait) return;
                 fait = true;
                 nbDeplaces++;
+                evenement("evt", "deplacement", "victime", victime, "urgent", d.patient, "creneau", "" + creneau);
                 Log.log(getLocalName(), "PREEMPTION : " + d.patient + " prend le creneau " + creneau + " de " + victime
                         + " (" + medecin.getLocalName() + ", " + rv.salle + ")");
                 registre.remove(victime);
@@ -423,6 +449,7 @@ public class CoordinateurAgent extends Agent {
         Demande v = rv.demande;
         Demande dv = new Demande(v.patient, v.conv, v.specialite, v.urgence, v.arrivee, compteur++);
         dv.deplace = true;
+        dv.repondreA = v.repondreA;
         dv.compensation = true;
         dv.ancien = ancien;
         file.add(dv);
@@ -444,7 +471,7 @@ public class CoordinateurAgent extends Agent {
         prop.addReceiver(d.aid());
         prop.setConversationId("comp-" + d.patient + "-" + compteur++);
         prop.setReplyByDate(new java.util.Date(System.currentTimeMillis() + 3000));
-        prop.setContent(Msg.build("nouveau", "" + creneau, "ancien", "" + d.ancien, "raison", "urgence",
+        prop.setContent(Msg.build("patient", d.patient, "nouveau", "" + creneau, "ancien", "" + d.ancien, "raison", "urgence",
                 "medecin", medecin, "salle", salle));
         Log.log(getLocalName(), "PROPOSITION a " + d.patient + " : creneau " + d.ancien + " -> " + creneau + " (" + medecin + ", " + salle + ")");
         addBehaviour(new ProposeInitiator(this, prop) {
@@ -457,6 +484,7 @@ public class CoordinateurAgent extends Agent {
                 d.termine = true;
                 registre.put(d.patient, new Rdv(d, medecin, salle, creneau));
                 int attente = Slots.attente(d.arrivee, creneau);
+                evenementRdv(d, medecin, salle, creneau, attente);
                 Log.log(getLocalName(), "COMPENSATION ACCEPTEE " + d.patient + " : " + medecin + ", " + salle + ", creneau " + creneau
                         + " (attente " + attente + ")");
                 ACLMessage inf = new ACLMessage(ACLMessage.INFORM);
@@ -483,6 +511,8 @@ public class CoordinateurAgent extends Agent {
                 annulerChezSalle(medecin, creneau, d.patient);   // M6 vers le medecin (fire-and-forget)
                 annulerChezSalle(salle, creneau, d.patient);     // M6 vers la salle
                 echecs.merge("compensation_" + raison, 1, Integer::sum);
+                evenement("evt", "echec", "patient", d.patient, "urgence", d.urgence.code(), "arrivee", "" + d.arrivee,
+                        "raison", "compensation_" + raison);
                 Log.log(getLocalName(), "COMPENSATION REFUSEE " + d.patient + " (" + raison + ") : creneau " + creneau + " rendu, patient a rappeler");
                 ACLMessage inf = new ACLMessage(ACLMessage.INFORM);
                 inf.addReceiver(d.aid());
@@ -508,6 +538,8 @@ public class CoordinateurAgent extends Agent {
         n.ancien = d.ancien;
         n.replanification = true;
         n.creneauOrigine = creneau;
+        n.repondreA = d.repondreA;
+        evenement("evt", "replanification", "patient", d.patient, "medecin", medecin);
         file.add(n);
         if (!d.compensation) {
             ACLMessage inf = new ACLMessage(ACLMessage.INFORM);
@@ -529,6 +561,7 @@ public class CoordinateurAgent extends Agent {
         d.termine = true;
         registre.put(d.patient, new Rdv(d, medecin, salle, creneau));
         int attente = Slots.attente(d.arrivee, creneau);
+        evenementRdv(d, medecin, salle, creneau, attente);
         Log.log(getLocalName(), "RDV CONFIRME " + d.patient + " : " + medecin + ", " + salle + ", creneau " + creneau + " (attente " + attente + ")");
         ACLMessage inf = new ACLMessage(ACLMessage.INFORM);
         inf.addReceiver(d.aid());
@@ -547,6 +580,7 @@ public class CoordinateurAgent extends Agent {
         if (d.replanification && (raison.equals("planning_plein") || raison.equals("planning_sature")
                 || raison.equals("aucun_medecin") || raison.equals("aucun_medecin_disponible"))) raison = "capacite";
         echecs.merge(raison, 1, Integer::sum);
+        evenement("evt", "echec", "patient", d.patient, "urgence", d.urgence.code(), "arrivee", "" + d.arrivee, "raison", raison);
         Log.log(getLocalName(), "ECHEC " + d.patient + " : " + raison);
         ACLMessage f = new ACLMessage(ACLMessage.FAILURE);
         f.addReceiver(d.aid());
@@ -554,6 +588,36 @@ public class CoordinateurAgent extends Agent {
         f.setContent(Msg.build("raison", raison));
         send(f);
         fin();
+    }
+
+    // ------------------------------------------------------------------ V3 : mesures
+
+    /** M9 : envoie un evenement au Monitor (s'il y en a un). Aucune consequence sur la planification. */
+    private void evenement(String... kv) {
+        if (monitor == null) return;
+        ACLMessage m = new ACLMessage(ACLMessage.INFORM);
+        m.addReceiver(new AID(monitor, AID.ISLOCALNAME));
+        m.setOntology(Msg.ONTO_EVENT);
+        m.setContent(Msg.build(kv));
+        send(m);
+    }
+
+    private void evenementRdv(Demande d, String medecin, String salle, int creneau, int attente) {
+        evenement("evt", "rdv_confirme", "patient", d.patient, "urgence", d.urgence.code(), "arrivee", "" + d.arrivee,
+                "medecin", medecin, "salle", salle, "creneau", "" + creneau, "attente", "" + attente);
+    }
+
+    /**
+     * "Es-tu au repos ?" : sert au ScenarioRunner a savoir quand un lot de demandes est entierement traite
+     * (file vide, aucune negociation en cours, aucun guichet programme) avant d'envoyer le lot suivant.
+     * Les messages d'un meme expediteur arrivent dans l'ordre : la question est donc lue apres les demandes qui la precedent.
+     */
+    private void repondreEtat(ACLMessage m) {
+        boolean repos = file.isEmpty() && !occupe && !guichetPlanifie;
+        ACLMessage rep = m.createReply();
+        rep.setPerformative(ACLMessage.INFORM);
+        rep.setContent(Msg.build("repos", repos ? "oui" : "non"));
+        send(rep);
     }
 
     // ------------------------------------------------------------------ mesures
