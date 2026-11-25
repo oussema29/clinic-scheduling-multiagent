@@ -181,6 +181,12 @@ public class MedecinAgent extends Agent {
                 } else if ("restaurer".equals(action)) {
                     // retour arriere d'une preemption : le patient deplace retrouve son creneau
                     int creneau = Msg.getInt(c, "creneau", -1);
+                    Rdv actuel = confirme.get(creneau);
+                    if (actuel == null || !actuel.patient.equals(c.get("actuel"))) {
+                        Log.log(getLocalName(), "restauration refusee : creneau " + creneau
+                                + " n'appartient plus a " + c.get("actuel"));
+                        throw new RefuseException("raison=creneau_change");
+                    }
                     confirme.put(creneau, new Rdv(c.get("patient"), Urgence.de(c.get("urgence")), false, compteur++));
                     Log.log(getLocalName(), "creneau " + creneau + " restaure pour " + c.get("patient"));
                     rep.setContent(Msg.build("statut", "restaure"));

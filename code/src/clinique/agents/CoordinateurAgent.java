@@ -434,7 +434,7 @@ public class CoordinateurAgent extends Agent {
                 rb.addReceiver(medecin);
                 rb.setConversationId(d.conv + "-restaurer-" + d.tentative);
                 rb.setContent(Msg.build("action", "restaurer", "creneau", "" + creneau, "patient", victime,
-                        "urgence", rv.demande.urgence.code()));
+                        "urgence", rv.demande.urgence.code(), "actuel", d.patient));
                 addBehaviour(new AchieveREInitiator(CoordinateurAgent.this, rb));
                 echec(d, "echec_transfert");
             }
