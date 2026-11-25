@@ -20,7 +20,10 @@ public final class Df {
         sd.setType(type);
         sd.setName(nom);
         dfd.addServices(sd);
-        try { DFService.register(a, dfd); } catch (FIPAException e) { e.printStackTrace(); }
+        try { DFService.register(a, dfd); }
+        catch (FIPAException e) {
+            Log.toujours(a.getLocalName(), "ERREUR inscription DF (" + type + ") : " + e.getMessage());
+        }
     }
 
     public static void retirer(Agent a) {
@@ -41,6 +44,7 @@ public final class Df {
             Arrays.sort(ids);
             return ids;
         } catch (FIPAException e) {
+            Log.toujours(a.getLocalName(), "ERREUR recherche DF (" + type + ") : " + e.getMessage());
             return new AID[0];
         }
     }
