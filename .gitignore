@@ -14,3 +14,7 @@ MTPs-Main-Container.txt
 
 # Resultats des campagnes de mesure (fichiers generes)
 resultats/
+
+# Mais on garde le README principal et les PDF du dossier documents
+!README.md
+!documents/*.pdf
